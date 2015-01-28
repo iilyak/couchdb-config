@@ -83,7 +83,7 @@ config_get_tests() ->
                 should_return_undefined_atom_on_missed_option(),
                 should_return_custom_default_value_on_missed_option(),
                 should_only_return_default_on_missed_option()%,
-                %%should_get_binary_option()
+                %%should_get_any_type_when_non_persistent()
             ]
         }
     }.
@@ -97,7 +97,7 @@ config_set_tests() ->
             [
                 should_update_option(),
                 should_create_new_section()%,
-                %%should_set_binary_option()
+                %%should_set_any_type_when_non_persistent()
             ]
         }
     }.
@@ -111,7 +111,7 @@ config_del_tests() ->
             [
                 should_return_undefined_atom_after_option_deletion(),
                 should_be_ok_on_deleting_unknown_options()%,
-                %%should_delete_binary_option()
+                %%should_delete_any_type_when_non_persistent()
             ]
         }
     }.
@@ -194,7 +194,7 @@ should_only_return_default_on_missed_option() ->
     ?_assertEqual("0",
                   config:get("httpd", "port", "bar")).
 
-should_get_binary_option() ->
+should_get_any_type_when_non_persistent() ->
     ?_assertEqual(<<"baz">>,
                   config:get(<<"foo">>, <<"bar">>, <<"baz">>)).
 
@@ -213,7 +213,7 @@ should_create_new_section() ->
             config:get("new_section", "bizzle")
         end).
 
-should_set_binary_option() ->
+should_set_any_type_when_non_persistent() ->
     ?_assertEqual(<<"baz">>,
         begin
             ok = config:set(<<"foo">>, <<"bar">>, <<"baz">>, false),
@@ -230,7 +230,7 @@ should_return_undefined_atom_after_option_deletion() ->
 should_be_ok_on_deleting_unknown_options() ->
     ?_assertEqual(ok, config:delete("zoo", "boo", false)).
 
-should_delete_binary_option() ->
+should_delete_any_type_when_non_persistent() ->
     ?_assertEqual(undefined,
         begin
             ok = config:set(<<"foo">>, <<"bar">>, <<"baz">>, false),

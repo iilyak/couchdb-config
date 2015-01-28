@@ -113,8 +113,9 @@ config_get_tests() ->
                 should_return_undefined_atom_on_missed_section(),
                 should_return_undefined_atom_on_missed_option(),
                 should_return_custom_default_value_on_missed_option(),
-                should_only_return_default_on_missed_option()%,
-                %%should_get_any_type_when_non_persistent()
+                should_only_return_default_on_missed_option(),
+                should_fail_to_get_binary_value(),
+                should_return_any_supported_default()
             ]
         }
     }.
@@ -127,8 +128,8 @@ config_set_tests() ->
             fun setup/0, fun teardown/1,
             [
                 should_update_option(),
-                should_create_new_section()%,
-                %%should_set_any_type_when_non_persistent()
+                should_create_new_section(),
+                should_fail_to_set_binary_value()
             ]
         }
     }.
@@ -141,8 +142,7 @@ config_del_tests() ->
             fun setup/0, fun teardown/1,
             [
                 should_return_undefined_atom_after_option_deletion(),
-                should_be_ok_on_deleting_unknown_options()%,
-                %%should_delete_any_type_when_non_persistent()
+                should_be_ok_on_deleting_unknown_options()
             ]
         }
     }.
@@ -241,9 +241,16 @@ should_only_return_default_on_missed_option() ->
     ?_assertEqual("0",
                   config:get("httpd", "port", "bar")).
 
-should_get_any_type_when_non_persistent() ->
-    ?_assertEqual(<<"baz">>,
+should_fail_to_get_binary_value() ->
+    ?_assertException(error, badarg,
                   config:get(<<"foo">>, <<"bar">>, <<"baz">>)).
+
+should_return_any_supported_default() ->
+    Values = [undefined, "list", true, false, 0.1, 1],
+    Tests = [{lists:flatten(io_lib:format("for type(~p)", [V])), V}
+        || V <- Values],
+    [{T, ?_assertEqual(V, config:get(<<"foo">>, <<"bar">>, V))}
+        || {T, V} <- Tests].
 
 should_update_option() ->
     ?_assertEqual("severe",
@@ -260,12 +267,9 @@ should_create_new_section() ->
             config:get("new_section", "bizzle")
         end).
 
-should_set_any_type_when_non_persistent() ->
-    ?_assertEqual(<<"baz">>,
-        begin
-            ok = config:set(<<"foo">>, <<"bar">>, <<"baz">>, false),
-            config:get(<<"foo">>, <<"bar">>)
-        end).
+should_fail_to_set_binary_value() ->
+    ?_assertException(error, badarg,
+        config:set(<<"foo">>, <<"bar">>, <<"baz">>, false)).
 
 should_return_undefined_atom_after_option_deletion() ->
     ?_assertEqual(undefined,
@@ -276,14 +280,6 @@ should_return_undefined_atom_after_option_deletion() ->
 
 should_be_ok_on_deleting_unknown_options() ->
     ?_assertEqual(ok, config:delete("zoo", "boo", false)).
-
-should_delete_any_type_when_non_persistent() ->
-    ?_assertEqual(undefined,
-        begin
-            ok = config:set(<<"foo">>, <<"bar">>, <<"baz">>, false),
-            ok = config:delete(<<"foo">>, <<"bar">>, false),
-            config:get(<<"foo">>, <<"bar">>)
-        end).
 
 should_ensure_in_defaults(_, _) ->
     ?_test(begin

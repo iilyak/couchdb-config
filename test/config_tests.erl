@@ -100,18 +100,24 @@ handle_config_change("update_state", Key, Value, Persist, {Pid, State}) ->
     Pid ! {config_msg, {{"update_state", Key, Value, Persist}, State}},
     {ok, {Pid, Key}};
 
-handle_config_change("throw_error", _Key, _Value, _Persist, {_Pid, _State}) ->
-    throw(this_is_an_error);
+handle_config_change("throw_error", _Key, Value, _Persist, {_Pid, _State}) ->
+    throw(Value);
 
 handle_config_change(Section, Key, Value, Persist, {Pid, State}) ->
     Pid ! {config_msg, {{Section, Key, Value, Persist}, State}},
     {ok, {Pid, State}}.
 
 
+handle_config_terminate(Self, {error, "error_in_terminate"} = Reason, {Pid, State}) ->
+    Pid ! {config_msg, {Self, Reason, State}},
+    _ = 1 / 0,
+    ok;
+handle_config_terminate(Self, {return, Reason}, {Pid, State}) ->
+    Pid ! {config_msg, {Self, Reason, State}},
+    Reason;
 handle_config_terminate(Self, Reason, {Pid, State}) ->
     Pid ! {config_msg, {Self, Reason, State}},
     ok.
-
 
 config_get_test_() ->
     {
@@ -239,14 +245,20 @@ config_listener_behaviour_test_() ->
             fun setup_config_listener/0,
             fun teardown/1,
             [
-                fun should_handle_value_change/1,
                 fun should_pass_correct_state_to_handle_config_change/1,
                 fun should_pass_correct_state_to_handle_config_terminate/1,
                 fun should_pass_subscriber_pid_to_handle_config_terminate/1,
+                fun should_handle_value_change/1,
                 fun should_not_call_handle_config_after_related_process_death/1,
                 fun should_remove_handler_when_requested/1,
                 fun should_remove_handler_when_pid_exits/1,
-                fun should_stop_monitor_on_error/1
+                fun should_remove_handler_from_terminate/1,
+
+                fun should_add_handler_back_when_error/1,
+                fun should_add_handler_back_when_manager_dies/1,
+                fun should_add_handler_back_when_die_in_terminate/1,
+                fun should_add_handler_back_when_monitor_die/1,
+                fun should_restart_if_failed_to_start/1
             ]
         }
     }.
@@ -489,8 +501,7 @@ should_remove_handler_when_pid_exits(Pid) ->
         ?assertEqual(0, n_handlers())
     end).
 
-
-should_stop_monitor_on_error(Pid) ->
+should_remove_handler_from_terminate(Pid) ->
     ?_test(begin
         ?assertEqual(1, n_handlers()),
 
@@ -498,24 +509,135 @@ should_stop_monitor_on_error(Pid) ->
         {monitored_by, [Mon]} = process_info(Pid, monitored_by),
         MonRef = erlang:monitor(process, Mon),
 
-        % Have the process throw an error
-        ?assertEqual(ok, config:set("throw_error", "foo", "bar", false)),
-
-        % Make sure handle_config_terminate is called
-        ?assertEqual({Pid, {error, this_is_an_error}, undefined}, getmsg(Pid)),
+        % Have the process throw an error and then return remove_handler from terminate
+        Mon ! {gen_event_EXIT, {config_listener, {?MODULE, Pid}}, {return, remove_handler}},
 
         % Wait for the config_listener_mon process to
-        % exit to indicate the handler has been removed
-        % due to an error
+        % exit to indicate the handler has been removed.
         receive
-            {'DOWN', MonRef, _, _, shutdown} -> ok
+            {'DOWN', MonRef, _, _, {return,remove_handler}} -> ok
         after ?TIMEOUT ->
-            erlang:error({timeout, config_listener_mon_shutdown})
+            erlang:error({timeout, config_listener_mon_death})
         end,
 
         ?assertEqual(0, n_handlers())
     end).
 
+should_add_handler_back_when_error(Pid) ->
+    ?_test(begin
+        ?assertEqual(1, n_handlers()),
+
+        % Have the process throw an error
+        ?assertEqual(ok, config:set("throw_error", "foo", "this_is_an_error", false)),
+
+        % Make sure handle_config_terminate is called
+        ?assertEqual({Pid, {error, "this_is_an_error"}, undefined}, getmsg(Pid)),
+
+        ?assertEqual(1, n_handlers())
+
+    end).
+
+should_add_handler_back_when_manager_dies(_Pid) ->
+    ?_test(begin
+        ?assertEqual(1, n_handlers()),
+
+        EventMgrPid = whereis(config_event),
+        MonRef = erlang:monitor(process, EventMgrPid),
+
+        exit(EventMgrPid, kill),
+
+        % Wait for the config_event process to exit
+        receive
+            {'DOWN', MonRef, _, _, _} ->
+                ok
+        after ?TIMEOUT ->
+            erlang:error({timeout, config_event_shutdown})
+        end,
+
+        % Wait for the event manager process to be restarted by supervisor
+        wait_process(config_event),
+
+        ?assert(wait(fun() -> n_handlers() =:= 1 orelse wait end)),
+        ok
+    end).
+
+should_add_handler_back_when_die_in_terminate(Pid) ->
+    ?_test(begin
+        ?assertEqual(1, n_handlers()),
+
+        % Have the process throw an error and then die in terminate
+        ?assertEqual(ok, config:set("throw_error", "foo", "error_in_terminate", false)),
+
+
+        % Make sure handle_config_terminate is called
+        ?assertEqual({Pid, {error, "error_in_terminate"}, undefined}, getmsg(Pid)),
+
+        ?assertEqual(1, length(handlers())),
+        ok
+    end).
+
+should_add_handler_back_when_monitor_die(Pid) ->
+    ?_test(begin
+        ?assertEqual(1, n_handlers()),
+
+        % Monitor the config_listener_mon process
+        {monitored_by, [Mon]} = process_info(Pid, monitored_by),
+        MonRef = erlang:monitor(process, Mon),
+
+        exit(Mon, kill),
+
+        % Make sure handle_config_terminate is called
+        ?assertEqual({Pid, killed, undefined}, getmsg(Pid)),
+
+        % Wait for the config_listener_mon process to
+        % exit to indicate the handler has been removed
+        % due to an error
+        receive
+            {'DOWN', MonRef, _, _, killed} ->
+                ok
+        after ?TIMEOUT ->
+            erlang:error({timeout, config_listener_mon_shutdown})
+        end,
+
+        ?assert(wait(fun() -> n_handlers() =:= 1 orelse wait end)),
+        ok
+
+    end).
+
+should_restart_if_failed_to_start(Pid) ->
+    ?_test(begin
+        % Monitor the config_listener_mon process
+        {monitored_by, [Mon]} = process_info(Pid, monitored_by),
+        MonRef = erlang:monitor(process, Mon),
+
+        ok = meck:new(config_listener, [passthrough]),
+        ok = meck:expect(config_listener, listen, ['_', '_'], meck:seq([
+            meck:raise(error, die),
+            meck:raise(error, die),
+            meck:passthrough()
+        ])),
+
+        exit(Mon, kill),
+
+        % Make sure handle_config_terminate is called
+        ?assertEqual({Pid, killed, undefined}, getmsg(Pid)),
+
+
+        % Wait for the config_listener_mon process to
+        % exit to indicate the handler has been removed
+        % due to an error
+        receive
+            {'DOWN', MonRef, _, _, killed} -> ok
+        after ?TIMEOUT ->
+            erlang:error({timeout, config_listener_mon_shutdown})
+        end,
+
+        meck:wait(3, config_listener, listen, ['_', '_'], 5000),
+        ?assert(wait(fun() -> n_handlers() =:= 1 orelse wait end)),
+
+        (catch meck:unload(config_listener)),
+        ok
+    end).
 
 spawn_config_listener() ->
     Self = self(),
@@ -577,3 +699,41 @@ n_handlers() ->
 handlers() ->
     Handlers = gen_event:which_handlers(config_event),
     [Pid || {config_listener, {?MODULE, Pid}} <- Handlers].
+
+%% copy/paste from test_util
+wait_process(Name) ->
+    wait_process(Name, 5000).
+wait_process(Name, Timeout) ->
+    wait(fun() ->
+       case whereis(Name) of
+       undefined ->
+          wait;
+       Pid ->
+          Pid
+       end
+    end, Timeout).
+
+wait(Fun) ->
+    wait(Fun, 5000, 50).
+
+wait(Fun, Timeout) ->
+    wait(Fun, Timeout, 50).
+
+wait(Fun, Timeout, Delay) ->
+    Now = now_us(),
+    wait(Fun, Timeout * 1000, Delay, Now, Now).
+
+wait(_Fun, Timeout, _Delay, Started, Prev) when Prev - Started > Timeout ->
+    timeout;
+wait(Fun, Timeout, Delay, Started, _Prev) ->
+    case Fun() of
+    wait ->
+        ok = timer:sleep(Delay),
+        wait(Fun, Timeout, Delay, Started, now_us());
+    Else ->
+        Else
+    end.
+
+now_us() ->
+    {MegaSecs, Secs, MicroSecs} = now(),
+    (MegaSecs * 1000000 + Secs) * 1000000 + MicroSecs.

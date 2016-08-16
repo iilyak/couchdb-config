@@ -16,8 +16,8 @@
 -vsn(2).
 
 %% Public interface
--export([start/2]).
--export([start/3]).
+-export([listen/2]).
+
 
 -export([behaviour_info/1]).
 
@@ -31,31 +31,29 @@ behaviour_info(callbacks) ->
 behaviour_info(_) ->
     undefined.
 
-start(Module, State) ->
-    start(Module, Module, State).
+listen(Id, Monitor) ->
+    gen_event:add_sup_handler(config_event, {?MODULE, Id}, Monitor).
 
-start(Module, Id, State) ->
-    gen_event:add_sup_handler(config_event, {?MODULE, Id}, {Module, State}).
+init({Monitor, _}) ->
+    {ok, Monitor};
+init(Monitor) ->
+    {ok, Monitor}.
 
-init({Module, State}) ->
-    {ok, {Module, State}}.
+handle_event({config_change, Sec, Key, Value, Persist}, Monitor) ->
+    config_listener_mon:notify(Monitor, Sec, Key, Value, Persist).
 
-handle_event({config_change, Sec, Key, Value, Persist}, {Module, {From, State}}) ->
-    case Module:handle_config_change(Sec, Key, Value, Persist, State) of
-        {ok, NewState} ->
-            {ok, {Module, {From, NewState}}};
-        remove_handler ->
-            remove_handler
-    end.
+handle_call(_Request, Monitor) ->
+    {ok, ignored, Monitor}.
 
-handle_call(_Request, St) ->
-    {ok, ignored, St}.
+handle_info(_Info, Monitor) ->
+    {ok, Monitor}.
 
-handle_info(_Info, St) ->
-    {ok, St}.
+terminate({stop, Reason}, Monitor) ->
+    config_listener_mon:terminate_config(Reason, Monitor),
+    ok;
+terminate(Reason, Monitor) ->
+    config_listener_mon:terminate_config(Reason, Monitor),
+    ok.
 
-terminate(Reason, {Module, {Subscriber, State}}) ->
-    Module:handle_config_terminate(Subscriber, Reason, State).
-
-code_change(_OldVsn, St, _Extra) ->
-    {ok, St}.
+code_change(_OldVsn, Monitor, _Extra) ->
+    {ok, Monitor}.
